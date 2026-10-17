@@ -1,125 +1,336 @@
 /*!
- * SyncSpace client library (single file, no dependencies).
+ * SyncSpace.js — Multiplayer in 10 lines!
+ * Single-file, dependency-free real-time client library.
  *
- *   const room = SyncSpace.connect({ url: 'wss://your-server', room: 'demo', name: 'Asha' });
- *   room.on('state', (key, value) => console.log(key, value));
- *   room.set('score', 10);
+ * Quickstart:
+ *   const room = SyncSpace.connect({ url: 'wss://your-server', room: 'demo', name: 'Alex' });
+ *   room.on('state', (key, val) => console.log(key, val));
+ *   room.set('score', 42);
+ *   room.on('cursor', (id, x, y, peer) => drawCursor(id, x, y, peer));
+ *   document.onmousemove = e => room.cursor(e.clientX / innerWidth, e.clientY / innerHeight);
  *
- * Public API: SyncSpace.connect(opts), SyncSpace.randomRoom()
- * Room object: set(key, value), get(key), getAll(), peers(), me(), cursor(x, y),
- *              on(event, fn), off(event, fn), close(), status
- * Events: open, close, reconnecting, state(key, value, byId), presence(peers),
- *         peer-join(peer), peer-leave(id), cursor(id, x, y, peer), error(err)
+ * Public API:
+ *   SyncSpace.connect({ url, room, name, clientId, connectTimeout })
+ *   SyncSpace.randomRoom()
+ *
+ * Room instance methods:
+ *   room.set(key, value)
+ *   room.get(key)
+ *   room.getAll()
+ *   room.peers()
+ *   room.me()
+ *   room.cursor(x, y)
+ *   room.on(event, fn)
+ *   room.off(event, fn)
+ *   room.close()
+ *   room.simulateDisconnect()
+ *   room.status -> 'connecting' | 'open' | 'reconnecting' | 'closed'
  */
+
 (function (root, factory) {
-  if (typeof module === 'object' && module.exports) module.exports = factory();
-  else root.SyncSpace = factory();
+  if (typeof module === 'object' && module.exports) {
+    module.exports = factory();
+  } else {
+    root.SyncSpace = factory();
+  }
 })(typeof self !== 'undefined' ? self : this, function () {
   'use strict';
 
   function randomRoom() {
-    var c = 'abcdefghjkmnpqrstuvwxyz23456789', s = '';
-    for (var i = 0; i < 6; i++) s += c[Math.floor(Math.random() * c.length)];
-    return s;
+    var chars = 'abcdefghjkmnpqrstuvwxyz23456789';
+    var res = '';
+    for (var i = 0; i < 6; i++) {
+      res += chars.charAt(Math.floor(Math.random() * chars.length));
+    }
+    return res;
   }
 
   function connect(opts) {
     opts = opts || {};
     if (!opts.url) throw new Error('SyncSpace.connect: "url" is required');
-    if (!/^[A-Za-z0-9_-]{1,32}$/.test(opts.room || '')) throw new Error('SyncSpace.connect: "room" must be 1-32 chars (letters, numbers, - or _)');
+    if (!/^[A-Za-z0-9_-]{1,32}$/.test(opts.room || '')) {
+      throw new Error('SyncSpace.connect: "room" must be 1-32 characters (alphanumeric, -, _)');
+    }
 
     var WS = opts.WebSocket || (typeof WebSocket !== 'undefined' ? WebSocket : null);
-    if (!WS) throw new Error('No WebSocket implementation available');
+    if (!WS) throw new Error('SyncSpace: No WebSocket implementation found');
 
     var listeners = {};
-    var state = {};           // latest known shared state
-    var peers = {};           // id -> {id, name, color}
-    var myId = opts.clientId || randomRoom() + randomRoom();
-    var ws = null, closedByUser = false, attempts = 0, timer = null, hb = null;
-    var queue = [];           // writes made while offline, flushed after reconnect
-    var lastCursor = 0;
-    var api = { status: 'connecting' };
+    var state = {}; // Current shared state map
+    var peers = {}; // id -> { id, name, color }
+    var myId = opts.clientId || (randomRoom() + randomRoom());
+    var ws = null;
+    var closedByUser = false;
+    var attempts = 0;
+    var reconnectTimer = null;
+    var heartbeatTimer = null;
+    var offlineQueue = [];
+    var lastCursorTime = 0;
 
-    function emit(ev) {
+    var api = {
+      status: 'connecting'
+    };
+
+    function emit(event) {
       var args = Array.prototype.slice.call(arguments, 1);
-      (listeners[ev] || []).slice().forEach(function (fn) { try { fn.apply(null, args); } catch (e) { console.error('[SyncSpace] listener error', e); } });
+      var handlers = listeners[event] || [];
+      handlers.slice().forEach(function (fn) {
+        try {
+          fn.apply(null, args);
+        } catch (err) {
+          console.error('[SyncSpace] Listener error for event "' + event + '":', err);
+        }
+      });
     }
-    function rawSend(obj) { if (ws && ws.readyState === 1) { ws.send(JSON.stringify(obj)); return true; } return false; }
-    function setStatus(s) { api.status = s; }
-    function peerList() { return Object.keys(peers).map(function (k) { return peers[k]; }); }
+
+    function sendRaw(payload) {
+      if (ws && ws.readyState === 1) {
+        try {
+          ws.send(JSON.stringify(payload));
+          return true;
+        } catch (e) {
+          return false;
+        }
+      }
+      return false;
+    }
+
+    function setStatus(newStatus) {
+      api.status = newStatus;
+    }
+
+    function getPeerList() {
+      return Object.keys(peers).map(function (k) {
+        return peers[k];
+      });
+    }
 
     function open() {
-      setStatus(attempts ? 'reconnecting' : 'connecting');
-      var sock = ws = new WS(opts.url);
-      var dropped = false;
-      // If the handshake hangs (flaky network, sleeping server), give up on it and retry.
-      var connectTimer = setTimeout(function () { if (sock.readyState !== 1) { try { sock.close(); } catch (e) {} drop(); } }, opts.connectTimeout || 8000);
-      function drop() {
-        if (dropped) return; dropped = true; clearTimeout(connectTimer); clearInterval(hb);
-        sock.onmessage = sock.onopen = null;
-        if (closedByUser) { setStatus('closed'); emit('close'); return; }
+      setStatus(attempts > 0 ? 'reconnecting' : 'connecting');
+      var sock = (ws = new WS(opts.url));
+      var isDropped = false;
+
+      // Handle hanging handshake
+      var connectTimer = setTimeout(function () {
+        if (sock.readyState !== 1) {
+          try {
+            sock.close();
+          } catch (e) {}
+          handleDrop();
+        }
+      }, opts.connectTimeout || 8000);
+
+      function handleDrop() {
+        if (isDropped) return;
+        isDropped = true;
+        clearTimeout(connectTimer);
+        clearInterval(heartbeatTimer);
+
+        sock.onopen = sock.onmessage = sock.onerror = sock.onclose = null;
+
+        if (closedByUser) {
+          setStatus('closed');
+          emit('close');
+          return;
+        }
+
         setStatus('reconnecting');
         var delay = Math.min(10000, 500 * Math.pow(2, attempts)) + Math.random() * 300;
         attempts++;
         emit('reconnecting', attempts, delay);
-        timer = setTimeout(open, delay);
+        reconnectTimer = setTimeout(open, delay);
       }
+
       sock.onopen = function () {
         clearTimeout(connectTimer);
-        rawSend({ t: 'join', room: opts.room, name: opts.name || 'Guest', clientId: myId });
+        sendRaw({
+          t: 'join',
+          room: opts.room,
+          name: opts.name || 'Guest',
+          clientId: myId
+        });
       };
-      sock.onmessage = function (e) {
-        var m; try { m = JSON.parse(e.data); } catch (err) { return; }
-        switch (m.t) {
+
+      sock.onmessage = function (event) {
+        var msg;
+        try {
+          msg = JSON.parse(event.data);
+        } catch (e) {
+          return;
+        }
+
+        switch (msg.t) {
           case 'welcome': {
             var wasReconnect = attempts > 0;
-            attempts = 0; myId = m.id; setStatus('open');
-            // Server state is the source of truth: restore it, then replay offline writes.
-            var old = state; state = m.state || {};
-            Object.keys(state).forEach(function (k) { if (JSON.stringify(old[k]) !== JSON.stringify(state[k])) emit('state', k, state[k], null); });
-            Object.keys(old).forEach(function (k) { if (!(k in state)) emit('state', k, undefined, null); });
-            peers = {}; (m.peers || []).forEach(function (p) { peers[p.id] = p; });
+            attempts = 0;
+            myId = msg.id;
+            setStatus('open');
+
+            // Synchronize state snapshot
+            var previousState = state;
+            state = msg.state || {};
+
+            // Fire state events for differences
+            Object.keys(state).forEach(function (k) {
+              if (JSON.stringify(previousState[k]) !== JSON.stringify(state[k])) {
+                emit('state', k, state[k], null);
+              }
+            });
+            Object.keys(previousState).forEach(function (k) {
+              if (!(k in state)) {
+                emit('state', k, undefined, null);
+              }
+            });
+
+            // Update peer directory
+            peers = {};
+            (msg.peers || []).forEach(function (p) {
+              peers[p.id] = p;
+            });
+
             emit('open', { reconnected: wasReconnect });
-            emit('presence', peerList());
-            var q = queue; queue = [];
-            q.forEach(function (w) { api.set(w.key, w.value); });
-            clearInterval(hb);
-            hb = setInterval(function () { rawSend({ t: 'ping' }); }, 20000);
+            emit('presence', getPeerList());
+
+            // Flush offline write queue
+            var queued = offlineQueue;
+            offlineQueue = [];
+            queued.forEach(function (item) {
+              api.set(item.key, item.value);
+            });
+
+            // Start heartbeat ping
+            clearInterval(heartbeatTimer);
+            heartbeatTimer = setInterval(function () {
+              sendRaw({ t: 'ping' });
+            }, 20000);
             break;
           }
-          case 'state':
-            if (m.value === undefined) delete state[m.key]; else state[m.key] = m.value;
-            emit('state', m.key, m.value, m.by); break;
-          case 'peer-join': peers[m.peer.id] = m.peer; emit('peer-join', m.peer); emit('presence', peerList()); break;
-          case 'peer-leave': var gone = peers[m.id]; delete peers[m.id]; emit('peer-leave', m.id, gone); emit('presence', peerList()); break;
-          case 'cursor': emit('cursor', m.id, m.x, m.y, peers[m.id]); break;
-          case 'error': emit('error', { code: m.code, message: m.message }); break;
+
+          case 'state': {
+            if (msg.value === undefined) {
+              delete state[msg.key];
+            } else {
+              state[msg.key] = msg.value;
+            }
+            emit('state', msg.key, msg.value, msg.by);
+            break;
+          }
+
+          case 'peer-join': {
+            peers[msg.peer.id] = msg.peer;
+            emit('peer-join', msg.peer);
+            emit('presence', getPeerList());
+            break;
+          }
+
+          case 'peer-leave': {
+            var departed = peers[msg.id];
+            delete peers[msg.id];
+            emit('peer-leave', msg.id, departed);
+            emit('presence', getPeerList());
+            break;
+          }
+
+          case 'cursor': {
+            emit('cursor', msg.id, msg.x, msg.y, peers[msg.id]);
+            break;
+          }
+
+          case 'error': {
+            emit('error', { code: msg.code, message: msg.message });
+            break;
+          }
+
+          case 'pong': {
+            // Heartbeat ACK
+            break;
+          }
         }
       };
-      sock.onclose = drop;
-      sock.onerror = function () { /* onclose follows and handles retry */ };
+
+      sock.onclose = handleDrop;
+      sock.onerror = function () {};
     }
 
-    api.on = function (ev, fn) { (listeners[ev] = listeners[ev] || []).push(fn); return api; };
-    api.off = function (ev, fn) { listeners[ev] = (listeners[ev] || []).filter(function (f) { return f !== fn; }); return api; };
-    api.get = function (key) { return state[key]; };
-    api.getAll = function () { return JSON.parse(JSON.stringify(state)); };
-    api.peers = peerList;
-    api.me = function () { return peers[myId] || { id: myId, name: opts.name || 'Guest' }; };
-    api.set = function (key, value) {
-      if (value === undefined) delete state[key]; else state[key] = value;   // optimistic local update
-      if (!rawSend({ t: 'set', key: key, value: value })) queue.push({ key: key, value: value });
+    // Public Room API
+    api.on = function (event, fn) {
+      if (typeof fn === 'function') {
+        (listeners[event] = listeners[event] || []).push(fn);
+      }
+      return api;
     };
+
+    api.off = function (event, fn) {
+      if (listeners[event]) {
+        listeners[event] = listeners[event].filter(function (f) {
+          return f !== fn;
+        });
+      }
+      return api;
+    };
+
+    api.get = function (key) {
+      return state[key];
+    };
+
+    api.getAll = function () {
+      return JSON.parse(JSON.stringify(state));
+    };
+
+    api.peers = getPeerList;
+
+    api.me = function () {
+      return peers[myId] || { id: myId, name: opts.name || 'Guest', color: '#6366f1' };
+    };
+
+    api.set = function (key, value) {
+      // Optimistic local state update
+      if (value === undefined) {
+        delete state[key];
+      } else {
+        state[key] = value;
+      }
+
+      if (!sendRaw({ t: 'set', key: key, value: value })) {
+        offlineQueue.push({ key: key, value: value });
+      }
+      return api;
+    };
+
     api.cursor = function (x, y) {
       var now = Date.now();
-      if (now - lastCursor < 33) return;   // ~30 updates/sec max
-      lastCursor = now; rawSend({ t: 'cursor', x: x, y: y });
+      // Throttle cursor broadcast to ~30 updates/sec
+      if (now - lastCursorTime < 33) return;
+      lastCursorTime = now;
+      sendRaw({ t: 'cursor', x: x, y: y });
     };
-    api.close = function () { closedByUser = true; clearTimeout(timer); clearInterval(hb); if (ws) ws.close(); };
+
+    api.close = function () {
+      closedByUser = true;
+      clearTimeout(reconnectTimer);
+      clearInterval(heartbeatTimer);
+      if (ws) {
+        try {
+          ws.close();
+        } catch (e) {}
+      }
+    };
+
+    // Helper for demo/testing: simulates network cut
+    api.simulateDisconnect = function () {
+      if (ws) {
+        try {
+          ws.close();
+        } catch (e) {}
+      }
+    };
 
     open();
     return api;
   }
 
-  return { connect: connect, randomRoom: randomRoom };
+  return {
+    connect: connect,
+    randomRoom: randomRoom
+  };
 });

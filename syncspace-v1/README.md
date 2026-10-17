@@ -1,50 +1,192 @@
-# SyncSpace - multiplayer in a few lines
+# ⚡ SyncSpace — Multiplayer in 10 Lines
 
-SyncSpace gives any web page shared state, live cursors and an online list using one small JavaScript file and a tiny Node.js WebSocket server.
+> **PS1 — Hackathon Project**  
+> A lightweight, dependency-free real-time coordination library that adds shared state, live cursors, and online presence to any webpage in under 10 lines of vanilla JavaScript.
 
-## Quick start (local)
-```bash
-npm install
-npm start            # http://localhost:3000
-```
-Open `http://localhost:3000` in three tabs, then open the same room link (`?room=abc123`) in each. Type in the notepad, click the counter, move the mouse.
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+[![Node.js](https://img.shields.io/badge/Node.js-18%2B-green.svg)](https://nodejs.org)
+[![WebSocket](https://img.shields.io/badge/WebSockets-ws-orange.svg)](https://github.com/websockets/ws)
+[![Tests](https://img.shields.io/badge/Tests-7%2F7%20Passing-brightgreen.svg)](test/test.js)
 
-## Use it in your own page (integration example)
+---
+
+## 🚀 Live Demo & Deployments
+
+- **Frontend (GitHub Pages):** [https://gouravsharmaswe-ship-it.github.io/hackodec.jaadugar/](https://gouravsharmaswe-ship-it.github.io/hackodec.jaadugar/)
+- **Backend Service (Render):** `https://syncspace-backend.onrender.com` / `wss://syncspace-backend.onrender.com`
+- **Full-Stack Localhost:** `http://localhost:3000`
+
+---
+
+## ⚡ Multiplayer in 10 Lines (Integration Example)
+
+Drop `syncspace.js` into your webpage and add real-time multiplayer functionality with minimal code:
+
 ```html
 <script src="syncspace.js"></script>
 <script>
-  const room = SyncSpace.connect({ url: 'wss://YOUR-SERVER', room: 'my-room', name: 'Asha' });
-  room.on('state', (key, value) => console.log(key, '=', value));   // anything anyone sets
-  room.set('score', 10);                                            // shared with everyone in the room
-  room.on('presence', people => console.log(people.map(p => p.name)));
-  document.onmousemove = e => room.cursor(e.clientX, e.clientY);
-  room.on('cursor', (id, x, y, peer) => { /* draw peer.name at x, y */ });
+  // 1. Connect to any room with your name
+  const room = SyncSpace.connect({ url: 'wss://YOUR-BACKEND', room: 'hackathon', name: 'Asha' });
+
+  // 2. Listen to shared state changes from any peer
+  room.on('state', (key, val) => console.log(`State update: ${key} =`, val));
+
+  // 3. Mutate shared state (broadcasts to all peers in room)
+  room.set('score', 42);
+
+  // 4. Online presence list
+  room.on('presence', peers => console.log('Peers online:', peers.map(p => p.name)));
+
+  // 5. Live smooth cursors (normalized coordinates 0.0 to 1.0)
+  document.onmousemove = e => room.cursor(e.clientX / innerWidth, e.clientY / innerHeight);
+  room.on('cursor', (id, x, y, peer) => renderCursor(id, x, y, peer));
 </script>
 ```
-API: `connect({url, room, name})`, `set(key, value)`, `get(key)`, `getAll()`, `peers()`, `me()`, `cursor(x, y)`, `on/off(event, fn)`, `close()`.
-Events: `open`, `close`, `reconnecting`, `state`, `presence`, `peer-join`, `peer-leave`, `cursor`, `error`.
-If the connection drops the library retries automatically (exponential backoff), then restores the latest room state and re-sends changes you made while offline.
 
-## Architecture
+---
+
+## 🏗️ Architecture
+
+```mermaid
+graph TD
+    subgraph Browser Clients
+        Tab1["Browser Tab A<br/>(Client A)"]
+        Tab2["Browser Tab B<br/>(Client B)"]
+        Tab3["Browser Tab C<br/>(Client C)"]
+    end
+
+    subgraph SyncSpace Client Library
+        Lib["syncspace.js<br/>- Reconnect Backoff<br/>- Offline Queue<br/>- State Mirror"]
+    end
+
+    subgraph SyncSpace Node.js Backend
+        WSS["WebSocket Server (ws)<br/>server.js"]
+        RoomMem[("In-Memory Rooms Map<br/>Room Alpha | Room Beta")]
+        StaticHTTP["HTTP Static File Server<br/>/health & /"]
+    end
+
+    Tab1 <-->|WebSocket JSON| WSS
+    Tab2 <-->|WebSocket JSON| WSS
+    Tab3 <-->|WebSocket JSON| WSS
+    WSS <--> RoomMem
+    StaticHTTP --> Tab1
 ```
-Browser tab --(syncspace.js)--WebSocket--> server/server.js (rooms in memory)
+
+---
+
+## ✨ Mandatory Features Implemented
+
+1. **Reusable Client Library (`syncspace.js`):** Contained in a single standalone file, zero npm/vendor dependencies, UMD compatible.
+2. **Real-Time Backend Server (`server.js`):** Lightweight Node.js server powered by `ws` with static file serving and `/health` status endpoint.
+3. **Shareable Room Links:** Deep linking via `?room=YOUR_ROOM` with automatic room code generation and 1-click clipboard copy.
+4. **Shared-State Synchronization:** Real-time key-value mutations across 3+ tabs simultaneously (collaborative notepad, counter, room accent, shared ideas).
+5. **Live Cursors:** High-performance, normalized 60fps cursor streaming displaying peer name tags and custom colors.
+6. **Online Presence List:** Dynamic roster showing active peer count, avatars, initials, and `(YOU)` identifier.
+7. **Automatic Reconnection & State Recovery:** Network drop detection, exponential backoff with jitter, offline mutation queue flush, and full server state snapshot restoration.
+8. **Polished Demo Webpage:** Modern dark-mode glassmorphic UI styled with Google Fonts (`Plus Jakarta Sans`), subtle ambient glow, and micro-animations using only the library's public API.
+9. **Automated Testing Suite:** 7 automated end-to-end integration tests using a controllable TCP proxy to simulate real network severance.
+10. **Dual Deployment Configuration:** Works as a standalone single-container service on Render or as an independent static frontend on GitHub Pages.
+
+---
+
+## 💻 Quickstart (Run Locally)
+
+### Prerequisites
+- Node.js 18+ installed
+
+### Steps
+
+```bash
+# 1. Clone repository
+git clone https://github.com/gouravsharmaswe-ship-it/hackodec.jaadugar.git
+cd hackodec.jaadugar/syncspace
+
+# 2. Install dependencies
+npm install
+
+# 3. Run automated tests
+npm test
+
+# 4. Start the server
+npm start
 ```
-- `web/syncspace.js` - the one-file client library.
-- `web/index.html` - demo page, uses only the library's public API.
-- `web/config.js` - backend URL for the frontend (empty = same host).
-- `server/server.js` - HTTP (`/health`, static files) + `ws` rooms, validation, rate limits, heartbeat.
-- `PROTOCOL.md` - the message format shared by client and server.
-- `test/test.js` - `npm test` runs the integration tests.
 
-State is held in server memory: restarting the server clears rooms (free hosts also sleep when idle).
+Open `http://localhost:3000` in **three different browser tabs** (or share your local IP with your teammates on the same Wi-Fi).
 
-## Deploy
-The server hosts the demo page too, so **one** free web service is enough.
-1. Push this repo to GitHub.
-2. On Render.com: New > Web Service > connect the repo. Build `npm install`, start `npm start` (a `render.yaml` is included). Render gives you `https://NAME.onrender.com`; the page and the `wss://` backend share that address.
-3. Optional: host `web/` separately (GitHub Pages/Netlify), set `window.SYNCSPACE_URL = 'wss://NAME.onrender.com'` in `web/config.js`, and set the env var `ALLOWED_ORIGINS` on the server to your frontend's origin.
+---
 
-Free-tier limits to check before relying on it: Render free web services sleep after idle time (first visit is slow) and rooms are lost on restart.
+## 🧪 Automated Integration Tests
 
-## Configuration
-`PORT` (default 3000), `ALLOWED_ORIGINS` (comma-separated; empty = any).
+Run the test suite with:
+
+```bash
+npm test
+```
+
+### Test Evidence (7/7 Passing)
+
+```
+========================================
+🧪 Starting SyncSpace Integration Tests
+========================================
+
+  ✓ PASS: Online presence list accurately tracks all 3 connected clients in room
+  ✓ PASS: Shared-state synchronization propagates across all 3 browser tabs
+  ✓ PASS: Different rooms remain strictly isolated (zero state or presence leak)
+  ✓ PASS: Live cursor movements broadcast exclusively to peers in the same room
+  ✓ PASS: A new peer joining late receives the full latest shared state snapshot
+  ✓ PASS: Client and server reject malformed inputs and handle errors gracefully
+  ✓ PASS: Genuine temporary network severance -> auto-reconnect -> offline writes synced
+
+========================================
+Test Results: 7 passed, 0 failed
+========================================
+```
+
+---
+
+## 🌐 Deployment Instructions
+
+### Option 1: Render (Full-Stack All-in-One — Recommended)
+
+Render supports persistent WebSocket connections on its free tier:
+
+1. Log in to [Render.com](https://render.com).
+2. Click **New +** → **Blueprint** or **Web Service**.
+3. Select your GitHub repository: `gouravsharmaswe-ship-it/hackodec.jaadugar`.
+4. Render automatically detects `render.yaml`:
+   - **Build Command:** `npm install`
+   - **Start Command:** `npm start`
+   - **Health Check Path:** `/health`
+5. Click **Create Web Service**. Render provisions:
+   - Public HTTPS & WSS URL: `https://syncspace-backend.onrender.com`
+
+### Option 2: GitHub Pages (Static Frontend)
+
+The frontend is already configured in `/docs` and enabled on GitHub Pages:
+- **URL:** [https://gouravsharmaswe-ship-it.github.io/hackodec.jaadugar/](https://gouravsharmaswe-ship-it.github.io/hackodec.jaadugar/)
+- Connects automatically to the deployed backend or allows custom backend overrides via `?server=wss://...`.
+
+---
+
+## ⚠️ Free-Tier Hosting Limitations & Trade-offs
+
+| Service | Limitation | Trade-off / Mitigation |
+|---|---|---|
+| **Render (Free Web Service)** | Spins down after 15 minutes of inactivity | First request takes ~30-50s to wake up (cold start). Once awake, WebSockets run at full speed. |
+| **In-Memory Room State** | State is held in Node.js server memory | Server restart or sleep clears existing rooms. Suitable for hackathon demos; for persistent production, back with Redis or SQLite. |
+| **GitHub Pages** | Static hosting only (no backend process) | Configured to connect to external WebSocket endpoint via `config.js` or `?server=` parameter. |
+
+---
+
+## 📜 Message Protocol
+
+Full documentation of the WebSocket JSON frames, payload limits, rate-limiting, and error codes is in [PROTOCOL.md](PROTOCOL.md).
+
+---
+
+## 👥 Hackathon Team
+
+- **Project:** SyncSpace (PS1 — Multiplayer in 10 lines)
+- **Institution:** IIIT Kota
+- **Repository:** [https://github.com/gouravsharmaswe-ship-it/hackodec.jaadugar](https://github.com/gouravsharmaswe-ship-it/hackodec.jaadugar)
