@@ -1,0 +1,131 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SyncSpace - multiplayer in a few lines</title>
+<style>
+  :root { --bg:#0f172a; --card:#1e293b; --text:#e2e8f0; --muted:#94a3b8; --accent:#6366f1; --ok:#10b981; --warn:#f59e0b; --bad:#ef4444; }
+  @media (prefers-color-scheme: light) { :root { --bg:#f1f5f9; --card:#fff; --text:#0f172a; --muted:#64748b; } }
+  * { box-sizing: border-box; }
+  body { margin:0; font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif; background:var(--bg); color:var(--text); }
+  header { display:flex; flex-wrap:wrap; gap:12px; align-items:center; justify-content:space-between; padding:14px 20px; }
+  h1 { font-size:1.25rem; margin:0; } h1 span { color:var(--accent); }
+  .status { display:inline-flex; align-items:center; gap:6px; font-size:.85rem; color:var(--muted); }
+  .dot { width:10px; height:10px; border-radius:50%; background:var(--warn); } .dot.open{background:var(--ok)} .dot.reconnecting,.dot.closed{background:var(--bad)}
+  main { display:grid; gap:16px; padding:0 20px 24px; grid-template-columns: 2fr 1fr; max-width:1100px; margin:0 auto; }
+  @media (max-width:760px) { main { grid-template-columns:1fr; } }
+  .card { background:var(--card); border-radius:12px; padding:16px; box-shadow:0 1px 3px rgba(0,0,0,.2); }
+  .card h2 { font-size:.8rem; text-transform:uppercase; letter-spacing:.06em; color:var(--muted); margin:0 0 10px; }
+  textarea { width:100%; min-height:200px; resize:vertical; background:transparent; color:inherit; border:1px solid var(--muted); border-radius:8px; padding:10px; font:inherit; }
+  button, input { font:inherit; border-radius:8px; border:1px solid var(--muted); background:transparent; color:inherit; padding:8px 12px; }
+  button { cursor:pointer; background:var(--accent); border-color:var(--accent); color:#fff; }
+  button.ghost { background:transparent; color:inherit; border-color:var(--muted); }
+  .row { display:flex; flex-wrap:wrap; gap:8px; align-items:center; }
+  .swatch { width:34px; height:34px; border-radius:8px; border:2px solid transparent; padding:0; }
+  .swatch.on { border-color:var(--text); }
+  #board { height:90px; border-radius:8px; margin-top:10px; display:flex; align-items:center; justify-content:center; font-size:1.6rem; font-weight:700; color:#fff; transition:background .2s; }
+  ul { list-style:none; margin:0; padding:0; } li { display:flex; align-items:center; gap:8px; padding:5px 0; }
+  li i { width:10px; height:10px; border-radius:50%; display:inline-block; }
+  .cursor { position:fixed; pointer-events:none; z-index:50; transition:transform .06s linear; left:0; top:0; }
+  .cursor svg { width:18px; height:18px; } .cursor b { font-size:11px; color:#fff; padding:1px 6px; border-radius:6px; margin-left:12px; position:relative; top:-4px; }
+  #toast { color:var(--bad); font-size:.85rem; min-height:1.2em; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Sync<span>Space</span></h1>
+  <div class="row">
+    <input id="name" maxlength="24" placeholder="Your name" size="12">
+    <button id="copy">Copy room link</button>
+    <button id="new" class="ghost">New room</button>
+    <span class="status"><i class="dot" id="dot"></i><span id="statusText">connecting...</span></span>
+  </div>
+</header>
+<main>
+  <section class="card">
+    <h2>Shared notepad (room: <span id="roomName"></span>)</h2>
+    <textarea id="pad" placeholder="Type here - everyone in this room sees it live."></textarea>
+    <h2 style="margin-top:16px">Shared counter and colour</h2>
+    <div class="row" id="swatches"></div>
+    <div id="board">0</div>
+    <div class="row" style="margin-top:10px"><button id="inc">+1 for everyone</button><button id="reset" class="ghost">Reset</button></div>
+    <div id="toast"></div>
+  </section>
+  <aside class="card">
+    <h2>Online now (<span id="count">0</span>)</h2>
+    <ul id="peers"></ul>
+    <p style="color:var(--muted);font-size:.85rem">Open this page in more tabs (or share the link) and move your mouse: you will see everyone's cursor.</p>
+  </aside>
+</main>
+<script src="config.js"></script>
+<script src="syncspace.js"></script>
+<script>
+// The demo uses ONLY the public SyncSpace API: connect, set/get, on, cursor, peers, me, close.
+(function () {
+  var $ = function (id) { return document.getElementById(id); };
+  var params = new URLSearchParams(location.search);
+  var roomId = params.get('room');
+  if (!roomId || !/^[A-Za-z0-9_-]{1,32}$/.test(roomId)) { roomId = SyncSpace.randomRoom(); history.replaceState(null, '', '?room=' + roomId); }
+  $('roomName').textContent = roomId;
+
+  var url = window.SYNCSPACE_URL || ((location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host);
+  var name = localStorage.getItem('ss-name') || 'Guest-' + Math.floor(Math.random() * 900 + 100);
+  $('name').value = name;
+
+  var room = SyncSpace.connect({ url: url, room: roomId, name: name });
+
+  var COLORS = ['#6366f1', '#10b981', '#f59e0b', '#ef4444', '#06b6d4'];
+  function render() {
+    $('board').textContent = room.get('count') || 0;
+    $('board').style.background = room.get('color') || COLORS[0];
+    document.querySelectorAll('.swatch').forEach(function (s) { s.classList.toggle('on', s.dataset.c === (room.get('color') || COLORS[0])); });
+    if (document.activeElement !== $('pad') && $('pad').value !== (room.get('pad') || '')) $('pad').value = room.get('pad') || '';
+  }
+  COLORS.forEach(function (c) {
+    var b = document.createElement('button'); b.className = 'swatch'; b.dataset.c = c; b.style.background = c;
+    b.onclick = function () { room.set('color', c); render(); }; $('swatches').appendChild(b);
+  });
+  $('inc').onclick = function () { room.set('count', (room.get('count') || 0) + 1); render(); };
+  $('reset').onclick = function () { room.set('count', 0); render(); };
+  $('pad').oninput = function () { room.set('pad', $('pad').value); };
+  $('name').onchange = function () { localStorage.setItem('ss-name', $('name').value); location.reload(); };
+  $('copy').onclick = function () { navigator.clipboard.writeText(location.href).then(function () { $('copy').textContent = 'Copied!'; setTimeout(function () { $('copy').textContent = 'Copy room link'; }, 1500); }); };
+  $('new').onclick = function () { location.search = '?room=' + SyncSpace.randomRoom(); };
+
+  function setStatus(text) { $('statusText').textContent = text; $('dot').className = 'dot ' + room.status; }
+  room.on('open', function (info) { setStatus(info.reconnected ? 'reconnected' : 'connected'); render(); });
+  room.on('reconnecting', function (n) { setStatus('connection lost - retrying (' + n + ')...'); });
+  room.on('state', render);
+  room.on('error', function (e) { $('toast').textContent = e.message; setTimeout(function () { $('toast').textContent = ''; }, 4000); });
+
+  room.on('presence', function (list) {
+    $('count').textContent = list.length;
+    var me = room.me().id;
+    $('peers').innerHTML = '';
+    list.forEach(function (p) {
+      var li = document.createElement('li');
+      li.innerHTML = '<i></i><span></span>'; li.firstChild.style.background = p.color; li.lastChild.textContent = p.name + (p.id === me ? ' (you)' : '');
+      $('peers').appendChild(li);
+    });
+    // remove cursors of people who left
+    document.querySelectorAll('.cursor').forEach(function (c) { if (!list.some(function (p) { return p.id === c.dataset.id; })) c.remove(); });
+  });
+
+  // Live cursors: positions are sent as fractions of the window so different screen sizes line up.
+  document.addEventListener('mousemove', function (e) { room.cursor(e.clientX / innerWidth, e.clientY / innerHeight); });
+  room.on('cursor', function (id, x, y, peer) {
+    var el = document.querySelector('.cursor[data-id="' + id + '"]');
+    if (!el) {
+      el = document.createElement('div'); el.className = 'cursor'; el.dataset.id = id;
+      el.innerHTML = '<svg viewBox="0 0 24 24"><path d="M3 2l7 19 3-8 8-3z"/></svg><b></b>';
+      el.querySelector('svg').style.fill = peer ? peer.color : '#888'; el.querySelector('b').style.background = peer ? peer.color : '#888';
+      el.querySelector('b').textContent = peer ? peer.name : 'guest'; document.body.appendChild(el);
+    }
+    el.style.transform = 'translate(' + (x * innerWidth) + 'px,' + (y * innerHeight) + 'px)';
+  });
+  render();
+})();
+</script>
+</body>
+</html>
